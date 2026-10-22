@@ -64,7 +64,33 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 }
 ```
 
-切档位走的是 DFPS 路径，**永远不碰 PLL**。改完必须**息屏再亮屏**，或者重启显示服务。
+切档位走的是 DFPS 路径，**永远不碰 PLL**。改完必须让 DSI 真正走一次下电上电，
+而**只有「重启显示服务」是可靠的**：
+
+```c
+// 重启显示服务 → CRTC 真正 disable → 下面这个无条件执行
+.unprepare = mtk_dsi_ddp_unprepare,     // → mtk_dsi_poweroff(dsi)   无条件
+
+// 息屏 → CONNECTOR_DISABLE → mtk_dsi_enter_idle(dsi, 0, async)
+//        skip_ulps 写死是 0，于是：
+if (skip_ulps == true || async == false)
+    mtk_dsi_poweroff(dsi);              // ← 有条件！
+```
+
+`async` 是上层传进来的（`async = params ? *((bool *)params) : 0;`），不受我们控制。
+`async == true` 时息屏只进 **ULPS 低功耗**，`clk_refcnt` 不归零，
+`mtk_dsi_poweron()` 开头那句 `if (++dsi->clk_refcnt != 1) return 0;` 直接返回，
+`mtk_dsi_set_data_rate()` 压根不跑 —— 改了也白改。
+
+所以**息屏亮屏是「有时候碰巧生效」，不能当成办法**。用重启显示服务：
+
+```sh
+for s in $(getprop | sed -n 's/^\[init\.svc\.\([^]]*composer[^]]*\)\].*/\1/p'); do
+    setprop ctl.restart "$s"
+done
+sleep 2
+setprop ctl.restart surfaceflinger
+```
 
 ### 3. 驱动读链路速率有优先级
 
@@ -161,8 +187,14 @@ insmod display_oc_vdo.ko
 # 生效
 echo 1 > /sys/module/display_oc_vdo/parameters/install
 
-# ★ 关键：让 DSI 走一次下电上电
-#   息屏，等 3 秒，再亮屏
+# ★ 关键：让 DSI 走一次下电上电 —— 重启显示服务
+for s in $(getprop | sed -n 's/^\[init\.svc\.\([^]]*composer[^]]*\)\].*/\1/p'); do
+    setprop ctl.restart "$s"
+done
+sleep 2
+setprop ctl.restart surfaceflinger
+sleep 5
+# （息屏亮屏不一定走下电上电，别指望它，原因见上面「关键事实 2」）
 
 # 看日志
 cat /sys/module/display_oc_vdo/parameters/log

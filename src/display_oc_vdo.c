@@ -22,6 +22,16 @@
  *            if (++dsi->clk_refcnt != 1) return 0;
  *        —— 所以切档位（DFPS 路径）永远不会重新编程 PLL，
  *           改完必须让 DSI 走一次下电上电才生效。
+ *        而「下电上电」只有【重启显示服务】可靠：
+ *          重启服务 → CRTC disable → .unprepare = mtk_dsi_ddp_unprepare
+ *                   → mtk_dsi_poweroff()            【无条件】
+ *          息  屏  → CONNECTOR_DISABLE
+ *                   → mtk_dsi_enter_idle(dsi, 0, async)
+ *                   → if (skip_ulps==true || async==false) poweroff()
+ *                                                    【有条件】
+ *        skip_ulps 写死是 0，async 由上层传；async==true 时息屏
+ *        只进 ULPS，clk_refcnt 不归零，poweron 开头就 return，
+ *        set_data_rate 压根不跑。所以别指望息屏亮屏。
  *
  *   结论：唯一可行的办法是【抬链路速率】+【各档靠 vtotal 区分】。
  *
